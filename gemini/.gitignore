@@ -1,0 +1,7 @@
+# Never commit the API key or the venv.
+.env
+_key.py
+.venv/
+__pycache__/
+*.pyc
+_uploads/

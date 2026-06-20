@@ -1,0 +1,322 @@
+# xDiT Unified Runner
+
+The xDiT Unified Runner provides a single entry point for running all supported diffusion models with proper benchmarking and profiling support.
+
+## Overview
+
+The unified runner provides:
+
+- **Single CLI interface** for all supported models
+- **Programmatic API** for integration into custom code
+- **Built-in benchmarking** with timing measurements
+- **Profiling support** via PyTorch profiler
+- **Automatic validation** of model capabilities and arguments
+- **Parallelization** across all supported models
+
+## Quick Start
+
+### Basic Usage
+
+Run any supported model using `xdit`:
+
+```bash
+xdit --model FLUX.1-dev \
+    --prompt "A cat running in a garden" \
+    --ulysses_degree 8
+```
+
+This will generate an image with Flux.1-dev and uses the model-specific values for any parameters that were not provided.
+
+
+## Architecture
+
+The unified runner consists of three main components:
+
+### 1. Runner (`xfuser/runner.py`)
+
+The main entry point that users interact with. It handles:
+
+- Argument parsing and validation
+- Model selection from the registry
+- Execution flow (initialization → run/profile → save → cleanup)
+
+```python
+# api_example.py
+# Usage: torchrun --nproc_per_node=4 api_example.py
+
+from xfuser.runner import xFuserModelRunner
+
+# Programmatic usage
+config = {
+    "model": "FLUX.1-dev",
+    "prompt": "A cat running",
+    "ulysses_degree": 4,
+}
+runner = xFuserModelRunner(config)
+input_args = runner.preprocess_args(config)
+runner.initialize(input_args)
+output, timings = runner.run(input_args)
+runner.save(output=output, timings=timings)
+runner.cleanup()
+```
+
+### 2. Base Model (`xfuser/model_executor/models/runner_models/base_model.py`)
+
+Contains all shared logic for model operations, e.g:
+
+- Model loading and initialization
+- Benchmarking and timing
+- Profiling with PyTorch profiler
+- Output saving
+- Torch compilation
+- Warmup calls
+- All other generic features
+
+### 3. Model Implementations
+
+Individual model classes that inherit from `xFuserModel`:
+
+- Define model-specific loading logic
+- Implement the inference pipeline
+- Specify default values and capabilities
+- Override base methods when needed for custom features
+
+## Supported Models
+
+| Model | Valid Model Name(s) |
+|-------|-----------------|
+| FLUX.1-dev | `FLUX.1-dev`, `black-forest-labs/FLUX.1-dev` |
+| FLUX.1-Kontext | `FLUX.1-Kontext-dev`, `black-forest-labs/FLUX.1-Kontext-dev` |
+| FLUX.2 | `FLUX.2-dev`, `black-forest-labs/FLUX.2-dev` |
+| FLUX.2-klein | `FLUX.2-klein-9B`, `black-forest-labs/FLUX.2-klein-9B` |
+| HunyuanVideo | `HunyuanVideo`, `tencent/HunyuanVideo` |
+| HunyuanVideo-1.5 | `HunyuanVideo-1.5`, `tencent/HunyuanVideo-1.5` |
+| Wan 2.1/2.2 I2V | `Wan2.1-I2V`, `Wan2.2-I2V`, `Wan-AI/Wan2.1-I2V-14B-720P-Diffusers`, `Wan-AI/Wan2.2-I2V-A14B-Diffusers` |
+| Wan 2.2 Distilled I2V (LightX2V 4-step) | `Wan2.2-Distilled-I2V` |
+| Wan 2.1/2.2 T2V | `Wan2.1-T2V`, `Wan2.2-T2V`, `Wan-AI/Wan2.1-T2V-14B-720P-Diffusers`, `Wan-AI/Wan2.2-T2V-A14B-Diffusers` |
+| Wan 2.1 VACE | `Wan2.1-VACE-14B`, `Wan2.1-VACE-1.3B`, `Wan-AI/Wan2.1-VACE-14B`, `Wan-AI/Wan2.1-VACE-1.3B` |
+| Stable Diffusion 3 | `SD3.5`, `stabilityai/stable-diffusion-3.5-large` |
+| Z-Image-Turbo | `Z-Image-Turbo`, `Tongyi-MAI/Z-Image-Turbo` |
+| LTX-2 | `LTX-2`, `Lightricks/LTX-2` |
+| Qwen-Image | `Qwen-Image`, `Qwen/Qwen-Image`, `Qwen-Image-2512`, `Qwen/Qwen-Image-2512` |
+| Qwen-Image-Edit | `Qwen-Image-Edit`, `Qwen/Qwen-Image-Edit`, `Qwen-Image-Edit-2509`, `Qwen/Qwen-Image-Edit-2509`, `Qwen-Image-Edit-2511`, `Qwen/Qwen-Image-Edit-2511` |
+
+
+
+## CLI Arguments
+
+#### Note: not all models support all of the features.
+
+### Model Selection
+
+| Argument | Description |
+|----------|-------------|
+| `--model` | Model name or HuggingFace path (required) |
+| `--task` | Task type for multi-task models |
+
+### Parallelization
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--ulysses_degree` | Ulysses sequence parallel degree | 1 |
+| `--ring_degree` | Ring sequence parallel degree | 1 |
+| `--pipefusion_parallel_degree` | PipeFusion pipeline stages | 1 |
+| `--tensor_parallel_degree` | Tensor parallel degree | 1 |
+| `--data_parallel_degree` | Data parallel degree | 1 |
+| `--use_cfg_parallel` | Enable CFG parallel | False |
+| `--use_parallel_vae` | Enable parallel VAE | False |
+| `--fully_shard_degree` | FSDP sharding degree; set to number of GPUs to shard across. 1 disables sharding. | 1 |
+| `--no_reshard_after_forward` | Keep parameters gathered after each block forward; trades memory for latency | False |
+| `--memory_efficient_sharding` | Load transformer blocks one at a time during init to reduce peak GPU memory; requires `--fully_shard_degree > 1` | False |
+
+### Input Parameters
+
+| Argument | Description | Default |
+|----------|-------------|---------------|
+| `--prompt` | Text prompt(s) for generation | - |
+| `--negative_prompt` | Negative prompt(s) | - |
+| `--height` | Output height | Model-specific |
+| `--width` | Output width | Model-specific |
+| `--num_frames` | Number of frames for video models | Model-specific |
+| `--num_inference_steps` | Denoising steps | Model-specific |
+| `--guidance_scale` | Classifier-free guidance scale | Model-specific |
+| `--max_sequence_length` | Maximum sequence length | Model-specific |
+| `--seed` | Random seed for reproducibility | 42 |
+| `--input_images` | Input image paths for image-to-image/video | [] |
+
+### Optimization Options
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--use_torch_compile` | Enable torch.compile acceleration | False |
+| `--use_fp8_gemms` | Enable FP8 GEMM quantization | False |
+| `--enable_tiling` | Enable VAE tiling | False |
+| `--enable_slicing` | Enable VAE slicing | False |
+| `--enable_model_cpu_offload` | Enable model CPU offload | False |
+| `--enable_sequential_cpu_offload` | Enable sequential CPU offload | False |
+| `--attention_backend` | Attention backend selection | None |
+
+### Model-specific Arguments
+
+| Argument | Description | Required for |
+|----------|-------------|--------------|
+| `--distilled_transformer_path` | Path to the **high-noise** distilled transformer safetensors | `Wan2.2-Distilled-I2V` |
+| `--distilled_transformer_2_path` | Path to the **low-noise** distilled transformer safetensors | `Wan2.2-Distilled-I2V` |
+
+### Benchmarking
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--num_iterations` | Number of benchmark iterations | 1 |
+| `--warmup_calls` | Warmup iterations before timing | 0 |
+| `--batch_size` | Batch size for dataset inference | None |
+| `--dataset_path` | Path to prompt dataset csv | None |
+| `--output_directory` | Output save directory | `.` |
+
+### Profiling
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--profile` | Enable PyTorch profiler | False |
+| `--profile_wait` | Profiler wait steps | 2 |
+| `--profile_warmup` | Profiler warmup steps | 2 |
+| `--profile_active` | Profiler active steps | 1 |
+
+## Examples
+
+### Multi-GPU Image Generation
+
+```bash
+xdit --model FLUX.1-dev \
+    --prompt "A majestic mountain landscape at sunset" \
+    --height 1024 \
+    --width 1024 \
+    --ulysses_degree 4 \
+    --num_inference_steps 50
+```
+
+### Video Generation
+
+```bash
+xdit --model HunyuanVideo \
+    --prompt "A cat playing with a ball" \
+    --height 720 \
+    --width 1280 \
+    --num_frames 49 \
+    --ulysses_degree 8
+```
+
+### Distilled Video Generation
+
+```bash
+xdit --model Wan2.2-Distilled-I2V \
+    --distilled_transformer_path   /path/to/wan2.2_i2v_A14b_high_noise_lightx2v_4step_720p_260412.safetensors \
+    --distilled_transformer_2_path /path/to/wan2.2_i2v_A14b_low_noise_lightx2v_4step_720p_260412.safetensors \
+    --input_images /path/to/image.jpg \
+    --prompt "A cat walking in a garden" \
+    --ulysses_degree 8
+```
+
+### Benchmarking with Multiple Iterations
+
+```bash
+xdit --model FLUX.1-dev \
+    --prompt "Benchmark test image" \
+    --ulysses_degree 8 \
+    --num_iterations 5 \
+    --output_directory ./benchmark_results
+```
+
+### Profiling
+
+```bash
+xdit --model FLUX.1-dev \
+    --prompt "Profile test" \
+    --ulysses_degree 8 \
+    --profile \
+    --output_directory ./profile_results
+```
+
+### With Torch Compile
+
+```bash
+xdit --model FLUX.1-dev \
+    --prompt "Compiled inference test" \
+    --ulysses_degree 4 \
+    --use_torch_compile
+```
+
+### Dataset Inference
+
+```bash
+xdit --model FLUX.1-dev \
+    --dataset_path ./prompts.csv \  # CSV file with at least column "prompt"
+    --batch_size 4 \
+    --ulysses_degree 8 \
+    --output_directory ./dataset_outputs
+```
+
+## Programmatic Usage
+
+The runner can be imported and used programmatically:
+
+```python
+from xfuser.runner import xFuserModelRunner
+
+# Configuration dictionary
+config = {
+    "model": "FLUX.1-dev",
+    "prompt": "A beautiful garden with flowers",
+    "height": 1024,
+    "width": 1024,
+    "ulysses_degree": 4,
+    "num_inference_steps": 50,
+    "seed": 42,
+    "output_directory": "./outputs",
+}
+
+# Create runner
+runner = xFuserModelRunner(config)
+
+# Preprocess arguments (applies model defaults)
+input_args = runner.preprocess_args(config)
+
+# Initialize model
+runner.initialize(input_args)
+
+# Run inference
+output, timings = runner.run(input_args)
+
+# Save outputs
+runner.save(output=output, timings=timings)
+
+# Cleanup
+runner.cleanup()
+```
+
+### Profiling Programmatically
+
+```python
+runner = xFuserModelRunner(config)
+input_args = runner.preprocess_args(config)
+runner.initialize(input_args)
+
+# Profile instead of run
+output, timings, profile = runner.profile(input_args)
+runner.save(profile=profile)
+
+runner.cleanup()
+```
+
+## Output Files
+
+The runner saves outputs to the specified `--output_directory`:
+
+| File | Description |
+|------|-------------|
+| `{model}_u{ulysses}r{ring}_tc_{compile}_{height}x{width}_{index}.png` | Generated images |
+| `{model}_u{ulysses}r{ring}_tc_{compile}_{height}x{width}_{index}.mp4` | Generated videos |
+| `timings.json` | Timing measurements for each iteration |
+| `profile_trace_rank_{rank}.json` | Chrome trace file for profiling |
+
+Saved outputs depend on the input arguments used.

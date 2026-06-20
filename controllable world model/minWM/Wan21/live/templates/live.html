@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>minWM — Voice/Text Steered World Model</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:20px;text-align:center}
+  #video{width:832px;max-width:95vw;background:#000;border-radius:8px;border:1px solid #333}
+  textarea{width:832px;max-width:95vw;height:50px;background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;padding:8px;font-size:13px}
+  button{font-size:15px;padding:10px 20px;margin:6px;border:none;border-radius:6px;cursor:pointer}
+  #startBtn{background:#2a7;color:#fff} #stopBtn{background:#a33;color:#fff}
+  #talkBtn{background:#46c;color:#fff;user-select:none} #talkBtn.rec{background:#e85;box-shadow:0 0 0 3px #e8540044}
+  .row{margin:10px auto}
+  #status{color:#9af;font-size:13px}
+  .panels{display:flex;gap:14px;max-width:832px;margin:12px auto;text-align:left}
+  .panel{flex:1;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px}
+  .ph{font-size:12px;color:#9af;margin-bottom:6px}
+  .mono{font-family:ui-monospace,monospace;font-size:12px;color:#cde;white-space:pre-wrap;min-height:96px}
+  .lvl{display:inline-block;width:120px;height:8px;background:#333;border-radius:4px;vertical-align:middle;overflow:hidden}
+  .lvl>div{height:100%;width:0;background:#2a7}
+  .ax{display:inline-block;width:150px}
+  .bar{display:inline-block;width:120px;height:8px;background:#333;border-radius:4px;vertical-align:middle;overflow:hidden;position:relative}
+  .bar>div{position:absolute;left:50%;height:100%;background:#fa6}
+</style>
+</head>
+<body>
+  <h2 id="hdr">🎙️/⌨️ → 🌍 Voice & Text Steered World Model</h2>
+  <div class="row" style="font-size:12px;color:#888">backbone: <b id="bb">…</b></div>
+  <div class="row" id="hyseed" style="display:none">
+    <label style="font-size:13px;color:#9af">🖼️ seed image:
+      <select id="exampleSel" style="background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;padding:6px;font-size:13px;max-width:620px"></select>
+    </label>
+  </div>
+  <div class="row">
+    <textarea id="prompt">A first-person walk down a sunlit forest path, tall green trees, dappled light, cinematic, photorealistic, highly detailed, 4k</textarea>
+  </div>
+  <div class="row">
+    <button id="startBtn">▶ Start scene</button>
+    <button id="talkBtn">🎤 Hold to talk</button>
+    <button id="stopBtn">■ Stop</button>
+    <span class="lvl"><div id="lvl"></div></span>
+  </div>
+  <div class="row">
+    <input id="steerInput" placeholder="…or type a command (e.g. 'turn left and go forward') and press Enter"
+           style="width:680px;max-width:80vw;background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;padding:8px;font-size:14px">
+    <button id="steerBtn" style="background:#46c;color:#fff">Steer ↵</button>
+  </div>
+  <div class="row" id="kbdrow">
+    <label style="font-size:14px"><input type="checkbox" id="kbdToggle" checked>
+      ⌨️ <b>keyboard control</b> — direct model inputs, bypasses Gemini</label>
+    <div class="muted" style="font-size:12px;margin-top:4px">
+      ↑/↓ forward·back &nbsp; ←/→ turn &nbsp; A/D strafe &nbsp; W/S look up·down &nbsp;
+      Q/E rise·sink &nbsp; Shift boost &nbsp; Space stop
+    </div>
+  </div>
+  <div class="row"><img id="video" alt="video stream will appear here"></div>
+  <div class="panels">
+    <div class="panel">
+      <div class="ph">🧭 parsed command <span id="src" style="color:#888"></span></div>
+      <div id="cmd" class="mono">—</div>
+    </div>
+    <div class="panel">
+      <div class="ph">🌍 world state</div>
+      <div id="world" class="mono">—</div>
+    </div>
+  </div>
+  <div class="row" id="status">idle</div>
+
+<script>
+const socket = io();
+const TARGET_SR = 16000;
+let audioCtx, source, proc, stream, running=false, recording=false, utt=[];
+let BACKBONE='wan', EXAMPLES=[];
+
+socket.on('config', d=>{
+  BACKBONE = d.backbone || 'wan';
+  EXAMPLES = d.examples || [];
+  document.getElementById('bb').textContent =
+    BACKBONE==='hy' ? 'HunyuanVideo-1.5 (image→video)' : 'Wan2.1 (text→video)';
+  if(BACKBONE==='hy'){
+    document.getElementById('hdr').textContent = '🖼️/⌨️ → 🌍 Image-Seeded Steered World Model (HunyuanVideo-1.5)';
+    const sel=document.getElementById('exampleSel'); sel.innerHTML='';
+    EXAMPLES.forEach((e,i)=>{ const o=document.createElement('option'); o.value=i;
+      o.textContent='#'+e.idx+': '+e.caption.slice(0,64); sel.appendChild(o); });
+    document.getElementById('hyseed').style.display='';
+    const setCap=()=>{ document.getElementById('prompt').value = EXAMPLES[sel.value].caption; };
+    sel.onchange=setCap; if(EXAMPLES.length) setCap();
+  }
+});
+
+socket.on('connect', ()=>setStatus('connected'));
+socket.on('status', d=>setStatus(d.msg));
+socket.on('frame', d=>{ document.getElementById('video').src='data:image/jpeg;base64,'+d.img; });
+socket.on('tick', d=>{
+  const c=d.camera;
+  document.getElementById('world').textContent =
+    `step ${d.step}  (${d.sec}s/chunk)\nprompt: ${d.prompt}\n` + axes(c);
+});
+socket.on('parsed', d=>{
+  document.getElementById('src').textContent = '· '+(d.src||'');
+  const c=d.camera||{};
+  let s = `intent: ${d.intent||'?'}\n`;
+  if(d.transcript) s += `heard: "${d.transcript}"\n`;
+  if(d.prompt_delta) s += `prompt Δ: ${d.prompt_delta}\n`;
+  s += axes(c);
+  document.getElementById('cmd').textContent = s;
+});
+function axes(c){
+  const k=['forward','strafe','turn','pitch','up','speed'];
+  return k.map(a=>`${a.padEnd(8)} ${(+c[a]||0).toFixed(2)}`).join('\n');
+}
+function setStatus(s){ document.getElementById('status').textContent=s; }
+
+function floatTo16kPCM(input, inRate){
+  const ratio=inRate/TARGET_SR, n=Math.floor(input.length/ratio), out=new Int16Array(n);
+  for(let i=0;i<n;i++){ const s=Math.max(-1,Math.min(1,input[Math.floor(i*ratio)])); out[i]=s<0?s*0x8000:s*0x7FFF; }
+  return out;
+}
+function b64(int16){
+  const u8=new Uint8Array(int16.buffer); let bin='';
+  for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
+  return btoa(bin);
+}
+
+async function ensureMic(){
+  if(audioCtx) return true;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}}); }
+  catch(e){ setStatus('mic denied: '+e); return false; }
+  audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+  source=audioCtx.createMediaStreamSource(stream);
+  proc=audioCtx.createScriptProcessor(4096,1,1);
+  source.connect(proc); proc.connect(audioCtx.destination);
+  proc.onaudioprocess=(e)=>{
+    const inp=e.inputBuffer.getChannelData(0);
+    let peak=0; for(let i=0;i<inp.length;i++) peak=Math.max(peak,Math.abs(inp[i]));
+    document.getElementById('lvl').style.width=Math.min(100,peak*200)+'%';
+    if(recording) utt.push(floatTo16kPCM(inp,audioCtx.sampleRate));
+  };
+  return true;
+}
+
+document.getElementById('startBtn').onclick=async ()=>{
+  if(running) return;
+  if(BACKBONE==='hy'){
+    socket.emit('start', {example_idx: +document.getElementById('exampleSel').value,
+                          caption: document.getElementById('prompt').value});
+  } else {
+    socket.emit('start', {prompt: document.getElementById('prompt').value});
+  }
+  await ensureMic();
+  running=true; setStatus('starting…');
+};
+
+// push-to-talk: hold the button (mouse or touch) to record an utterance.
+const talk=document.getElementById('talkBtn');
+async function talkStart(ev){ ev.preventDefault(); if(!await ensureMic()) return; recording=true; utt=[]; talk.classList.add('rec'); setStatus('listening…'); }
+function talkEnd(ev){
+  if(!recording) return; ev.preventDefault(); recording=false; talk.classList.remove('rec');
+  let len=0; utt.forEach(a=>len+=a.length); const all=new Int16Array(len); let o=0;
+  utt.forEach(a=>{ all.set(a,o); o+=a.length; }); utt=[];
+  if(all.length>1600){ socket.emit('utterance',{pcm:b64(all)}); setStatus('thinking…'); }
+}
+talk.addEventListener('mousedown',talkStart); talk.addEventListener('mouseup',talkEnd); talk.addEventListener('mouseleave',talkEnd);
+talk.addEventListener('touchstart',talkStart); talk.addEventListener('touchend',talkEnd);
+
+function sendSteer(){
+  const v=document.getElementById('steerInput').value.trim();
+  if(v){ socket.emit('command',{text:v}); document.getElementById('steerInput').value=''; }
+}
+document.getElementById('steerBtn').onclick=sendSteer;
+document.getElementById('steerInput').addEventListener('keydown',e=>{ if(e.key==='Enter') sendSteer(); });
+
+document.getElementById('stopBtn').onclick=()=>{
+  running=false; socket.emit('stop');
+  if(proc){proc.disconnect(); proc=null;}
+  if(source) source.disconnect();
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  if(audioCtx){audioCtx.close(); audioCtx=null;}
+  setStatus('stopped');
+};
+
+// --- keyboard direct control (bypasses Gemini): hold keys to drive the camera ---
+const KEYMAP = {
+  ArrowUp:['forward',1], ArrowDown:['forward',-1],
+  ArrowLeft:['turn',-1], ArrowRight:['turn',1],
+  KeyW:['pitch',1], KeyS:['pitch',-1],     // look up / down
+  KeyA:['strafe',-1], KeyD:['strafe',1],   // strafe left / right
+  KeyQ:['up',1], KeyE:['up',-1],           // rise / sink
+};
+const SYM = {ArrowUp:'↑',ArrowDown:'↓',ArrowLeft:'←',ArrowRight:'→',KeyW:'W',KeyS:'S',KeyA:'A',KeyD:'D',KeyQ:'Q',KeyE:'E'};
+const held = new Set(); let boost=false;
+const kbdOn = ()=>document.getElementById('kbdToggle').checked;
+const typing = ()=>{ const a=document.activeElement; return a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA'); };
+function camFromHeld(){
+  const c={forward:0,strafe:0,turn:0,pitch:0,up:0,speed:boost?1.8:1.0};
+  held.forEach(k=>{ const m=KEYMAP[k]; if(m) c[m[0]]+=m[1]; });
+  ['forward','strafe','turn','pitch','up'].forEach(a=>c[a]=Math.max(-1,Math.min(1,c[a])));
+  return c;
+}
+function sendDirect(){
+  const keys=[...held].map(k=>SYM[k]||'').join(' ')+(boost?' ⚡':'');
+  socket.emit('direct', {camera:camFromHeld(), keys:keys.trim()||'(idle)'});
+}
+window.addEventListener('keydown', e=>{
+  if(!kbdOn() || typing()) return;
+  if(e.code==='Space'){ e.preventDefault(); held.clear(); boost=false; sendDirect(); return; }
+  if(e.code==='ShiftLeft'||e.code==='ShiftRight'){ if(!boost){ boost=true; sendDirect(); } return; }
+  if(!(e.code in KEYMAP)) return;
+  e.preventDefault();
+  if(e.repeat) return;            // ignore auto-repeat; hold persists server-side
+  held.add(e.code); sendDirect();
+});
+window.addEventListener('keyup', e=>{
+  if(!kbdOn()) return;
+  if(e.code==='ShiftLeft'||e.code==='ShiftRight'){ boost=false; sendDirect(); return; }
+  if(!(e.code in KEYMAP)) return;
+  held.delete(e.code); sendDirect();
+});
+</script>
+</body>
+</html>

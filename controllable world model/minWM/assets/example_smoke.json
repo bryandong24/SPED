@@ -1,0 +1,8 @@
+[
+  {
+    "id": 1,
+    "image": "img/1.png",
+    "caption": "A serene garden path winds through manicured greenery, leading toward a dark building adorned with insect displays, under a soft overcast sky. A quiet, slightly overcast day at a park or garden. A brick pathway leads into the distance, flanked by manicured green bushes. To the right, a long, dark building displays framed images of butterflies or insects. The pathway appears wet, suggesting recent rain. The atmosphere is peaceful and serene, with a sense of calm and stillness. The scene evokes a sense of nature and tranquility, inviting viewers to take a leisurely stroll.",
+    "trajectory": "a*4,w*8,s*7"
+  }
+]

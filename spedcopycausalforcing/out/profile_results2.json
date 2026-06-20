@@ -1,0 +1,75 @@
+{
+  "per_phase_48f": {
+    "baseline": {
+      "full": {
+        "total_ms": 6215.5,
+        "calls": 98,
+        "ms_per_call": 63.42
+      },
+      "ctx": {
+        "total_ms": 2978.3,
+        "calls": 48,
+        "ms_per_call": 62.05
+      }
+    },
+    "s0.50_l1": {
+      "low": {
+        "total_ms": 2347.7,
+        "calls": 48,
+        "ms_per_call": 48.91
+      },
+      "full": {
+        "total_ms": 3236.2,
+        "calls": 50,
+        "ms_per_call": 64.72
+      },
+      "ctx": {
+        "total_ms": 2972.2,
+        "calls": 48,
+        "ms_per_call": 61.92
+      }
+    }
+  },
+  "long_scan": {
+    "32": {
+      "base_s": 5.836,
+      "base_std": 0.015,
+      "speed_s": 5.543,
+      "speed_std": 0.009,
+      "base_fps": 5.48,
+      "speed_fps": 5.77,
+      "speedup": 1.0529,
+      "pct": 5.3
+    },
+    "48": {
+      "base_s": 9.316,
+      "base_std": 0.017,
+      "speed_s": 8.645,
+      "speed_std": 0.024,
+      "base_fps": 5.15,
+      "speed_fps": 5.55,
+      "speedup": 1.0776,
+      "pct": 7.8
+    },
+    "64": {
+      "base_s": 12.702,
+      "base_std": 0.006,
+      "speed_s": 11.778,
+      "speed_std": 0.017,
+      "base_fps": 5.04,
+      "speed_fps": 5.43,
+      "speedup": 1.0785,
+      "pct": 7.8
+    },
+    "96": {
+      "base_s": 19.584,
+      "base_std": 0.021,
+      "speed_s": 17.997,
+      "speed_std": 0.029,
+      "base_fps": 4.9,
+      "speed_fps": 5.33,
+      "speedup": 1.0882,
+      "pct": 8.8
+    }
+  }
+}

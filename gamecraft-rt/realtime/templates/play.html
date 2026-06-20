@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GameCraft — Live</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  body{background:#0d0f14;color:#e6e6e6;font-family:system-ui,Segoe UI,Roboto,sans-serif;margin:0;padding:18px;}
+  h1{font-size:18px;margin:0 0 12px;font-weight:600;}
+  .wrap{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;}
+  #screen{background:#000;border-radius:8px;display:block;box-shadow:0 0 30px #0008;}
+  .panel{min-width:280px;}
+  .gen{position:absolute;color:#ffd24a;font-size:13px;padding:6px 10px;background:#000a;border-radius:6px;margin:8px;}
+  .row{margin:10px 0;}
+  .keys{display:grid;grid-template-columns:repeat(3,46px);grid-gap:6px;justify-content:start;}
+  .key{height:42px;display:flex;align-items:center;justify-content:center;background:#1b2030;border:1px solid #2c3650;
+       border-radius:7px;font-weight:700;font-size:13px;color:#9fb0d0;user-select:none;}
+  .key.on{background:#3a6df0;color:#fff;border-color:#7aa2ff;box-shadow:0 0 12px #3a6df0aa;}
+  .key.sp{grid-column:span 1;font-size:11px;}
+  .lbl{color:#7e8aa0;font-size:12px;margin:14px 0 4px;text-transform:uppercase;letter-spacing:.5px;}
+  input,button{font-size:14px;padding:8px 10px;border-radius:6px;border:1px solid #2c3650;background:#141826;color:#e6e6e6;}
+  input{width:300px;}
+  button{cursor:pointer;background:#3a6df0;border-color:#3a6df0;font-weight:600;}
+  button.stop{background:#b33;border-color:#b33;}
+  .stat{font-size:13px;line-height:1.7;color:#b9c4d8;}
+  .stat b{color:#fff;}
+  code{background:#1b2030;padding:1px 5px;border-radius:4px;color:#9fd0ff;}
+</style>
+</head>
+<body>
+<h1>🎮 Hunyuan-GameCraft — Live (interactive world model)</h1>
+<div class="wrap">
+  <div style="position:relative;">
+    <img id="screen" width="{{W}}" height="{{H}}">
+    <div class="gen" id="gen">starting…</div>
+  </div>
+  <div class="panel">
+    <div class="lbl">Move (WASD)</div>
+    <div class="keys">
+      <div></div><div class="key" id="k-w">W</div><div></div>
+      <div class="key" id="k-a">A</div><div class="key" id="k-s">S</div><div class="key" id="k-d">D</div>
+    </div>
+    <div class="lbl">Look (arrow keys)</div>
+    <div class="keys">
+      <div></div><div class="key" id="k-up_rot">↑</div><div></div>
+      <div class="key" id="k-left_rot">←</div><div class="key" id="k-down_rot">↓</div><div class="key" id="k-right_rot">→</div>
+    </div>
+    <div class="row">
+      <div class="lbl">Speed <span id="spv">0.2</span></div>
+      <input type="range" id="speed" min="0.1" max="1.5" step="0.1" value="0.2" style="width:200px">
+    </div>
+    <div class="lbl">Prompt swap (mid-rollout)</div>
+    <div class="row">
+      <input id="prompt" value="{{prompt}}">
+      <button onclick="swap()">Swap</button>
+    </div>
+    <div class="row"><button class="stop" onclick="sock.emit('stop')">Stop</button></div>
+    <div class="lbl">Status</div>
+    <div class="stat" id="stat">connecting…</div>
+  </div>
+</div>
+
+<script>
+const sock = io();
+const screen = document.getElementById('screen');
+const genEl = document.getElementById('gen');
+const statEl = document.getElementById('stat');
+
+// ---- frame buffer + 25fps playback ----
+let buf = [], playing=false;
+const FPS = 25;
+function play(){
+  if(buf.length>0){ screen.src = 'data:image/jpeg;base64,'+buf.shift(); }
+  setTimeout(play, 1000/FPS);
+}
+play();
+sock.on('frame', d=>{ buf.push(d.img); });
+sock.on('connect', ()=>{ statEl.innerHTML='connected — generating first chunk…'; });
+let chunks=0;
+sock.on('chunk_done', d=>{
+  chunks++;
+  statEl.innerHTML = `chunk <b>${d.chunk}</b> · <b>${d.gen_s}s</b> (${d.gen_fps} gen-FPS) · ${d.nframes} frames<br>`+
+                     `action <code>${d.action}</code> speed ${d.speed}<br>buffer ${buf.length} frames`;
+});
+sock.on('swapped', d=>{ genEl.textContent='swapped → '+d.prompt.slice(0,40); });
+setInterval(()=>{ genEl.textContent = buf.length>1 ? '▶ playing ('+buf.length+' buffered)' : '⏳ generating next chunk…'; }, 300);
+
+// ---- keyboard ----
+const KEYMAP = {KeyW:'w',KeyA:'a',KeyS:'s',KeyD:'d',
+                ArrowUp:'up_rot',ArrowDown:'down_rot',ArrowLeft:'left_rot',ArrowRight:'right_rot'};
+let speed = 0.2;
+document.getElementById('speed').oninput = e=>{ speed=parseFloat(e.target.value); document.getElementById('spv').textContent=speed; };
+function setKey(id,on){ const el=document.getElementById('k-'+id); if(el) el.classList.toggle('on',on); }
+window.addEventListener('keydown', e=>{
+  const a = KEYMAP[e.code]; if(!a) return; e.preventDefault();
+  setKey(a,true); sock.emit('action',{id:a, speed:speed});
+});
+window.addEventListener('keyup', e=>{
+  const a = KEYMAP[e.code]; if(!a) return;
+  setKey(a,false);
+});
+function swap(){ const p=document.getElementById('prompt').value; sock.emit('set_prompt',{prompt:p}); }
+</script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Causal Forcing — Live Audio-Steered Video (training-free)</title>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:20px;text-align:center}
+  #video{width:832px;max-width:95vw;background:#000;border-radius:8px;border:1px solid #333}
+  textarea{width:832px;max-width:95vw;height:54px;background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;padding:8px;font-size:13px}
+  button{font-size:16px;padding:10px 22px;margin:6px;border:none;border-radius:6px;cursor:pointer}
+  #startBtn{background:#2a7;color:#fff} #stopBtn{background:#a33;color:#fff}
+  .row{margin:10px auto}
+  #status{color:#888;font-size:13px}
+  .panels{display:flex;gap:14px;max-width:832px;margin:12px auto;text-align:left}
+  .panel{flex:1;background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:10px}
+  .ph{font-size:12px;color:#9af;margin-bottom:6px} .muted{color:#666;font-weight:normal}
+  .mono{font-family:ui-monospace,monospace;font-size:13px;color:#cde;min-height:48px;white-space:pre-wrap}
+  .hot{color:#fd8}
+  .bar{height:6px;background:#333;border-radius:3px;margin-top:8px;overflow:hidden}
+  .bar>div{height:100%;width:0;background:#fa6;transition:width .3s}
+  .lvl{display:inline-block;width:120px;height:8px;background:#333;border-radius:4px;vertical-align:middle;overflow:hidden}
+  .lvl>div{height:100%;width:0;background:#2a7}
+</style>
+</head>
+<body>
+  <h2>🎙️ → 🎬 Live Audio-Steered Video</h2>
+  <div class="muted" style="margin:-6px 0 12px;font-size:13px">
+    Model: <b>Causal Forcing++ — frame-wise 2-step</b> (autoregressive Wan2.1-T2V-1.3B, 4-step first chunk) &nbsp;·&nbsp;
+    Live steering: <b>training-free forward SLERP prompt ramp</b> — no fine-tuning, no recache.<br>
+    Prompts (initial + steering) auto-enhanced by <b>Gemini 3.1 Flash-Lite</b>.
+  </div>
+  <div class="row">
+    <textarea id="prompt">A fluffy golden retriever with a glossy honey-gold coat and a red leather collar bounds through a vast sunlit meadow of orange and yellow wildflowers, captured in crisp HDR 4K with razor-sharp fur detail. Warm golden afternoon light rakes across the lush green grass and pollen drifts glowing in the air. The low camera tracks fast alongside the dog at a full sprint, tongue out and ears flapping, petals scattering in its wake, rolling green hills and a bright blue sky beyond, cinematic and photorealistic.</textarea>
+  </div>
+  <div class="row">
+    <button id="startBtn">▶ Start (speak to steer)</button>
+    <button id="muteBtn">🔇 Mute</button>
+    <button id="stopBtn">■ Stop</button>
+    <span class="lvl"><div id="lvl"></div></span>
+  </div>
+  <div class="row">
+    <input id="steerInput" placeholder="…or type a scene and press Enter to steer" style="width:680px;max-width:80vw;background:#1c1c1c;color:#eee;border:1px solid #333;border-radius:6px;padding:8px;font-size:14px">
+    <button id="steerBtn" style="background:#46c;color:#fff">Steer ↵</button>
+  </div>
+  <div class="row"><img id="video" alt="video stream will appear here"></div>
+  <div class="panels">
+    <div class="panel">
+      <div class="ph">🎧 ASR live <span id="win" class="muted"></span></div>
+      <div id="asrlive" class="mono">—</div>
+    </div>
+    <div class="panel">
+      <div class="ph">🧠 Active prompt (umT5) — a steer replaces the whole prompt <span id="tok" class="muted"></span></div>
+      <div id="curstate" class="hot" style="font-size:14px;margin-bottom:5px">current state: —</div>
+      <div id="embedded" class="mono" style="font-size:11px;color:#9ab">—</div>
+      <div class="bar"><div id="tokbar"></div></div>
+    </div>
+  </div>
+  <div class="row" id="status">idle</div>
+
+<script>
+const socket = io();
+const TARGET_SR = 16000;
+let audioCtx, source, proc, stream, running = false, muted = false;
+
+socket.on('connect', ()=>setStatus('connected'));
+socket.on('status', d=>setStatus(d.msg));
+socket.on('frame', d=>{ document.getElementById('video').src = 'data:image/jpeg;base64,'+d.img; });
+socket.on('asr_live', d=>{
+  document.getElementById('asrlive').textContent = d.raw || '—';
+  document.getElementById('win').textContent = '('+d.window_s+'s window)';
+});
+socket.on('embedded', d=>{
+  document.getElementById('curstate').textContent = 'current state: ' + (d.current || '(none — just the seed)');
+  document.getElementById('embedded').textContent = d.prompt;
+  if(d.tokens != null){
+    document.getElementById('tok').textContent = d.tokens+' / '+d.budget+' tokens';
+    document.getElementById('tokbar').style.width = Math.min(100, 100*d.tokens/d.budget)+'%';
+  }
+});
+function setStatus(s){ document.getElementById('status').textContent = s; }
+
+function floatTo16kPCM(input, inRate){
+  const ratio = inRate / TARGET_SR;
+  const n = Math.floor(input.length / ratio);
+  const out = new Int16Array(n);
+  for(let i=0;i<n;i++){
+    const s = Math.max(-1, Math.min(1, input[Math.floor(i*ratio)]));
+    out[i] = s < 0 ? s*0x8000 : s*0x7FFF;
+  }
+  return out;
+}
+function b64(bytes){
+  let bin=''; const u8=new Uint8Array(bytes.buffer);
+  for(let i=0;i<u8.length;i++) bin+=String.fromCharCode(u8[i]);
+  return btoa(bin);
+}
+
+document.getElementById('startBtn').onclick = async ()=>{
+  if(running) return;
+  const prompt = document.getElementById('prompt').value;
+  socket.emit('start', {prompt});
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1, echoCancellation:true, noiseSuppression:true}});
+  }catch(e){ setStatus('mic denied: '+e); return; }
+  audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  source = audioCtx.createMediaStreamSource(stream);
+  proc = audioCtx.createScriptProcessor(4096, 1, 1);
+  source.connect(proc); proc.connect(audioCtx.destination);
+  proc.onaudioprocess = (e)=>{
+    if(muted){ document.getElementById('lvl').style.width = '0%'; return; }
+    const inp = e.inputBuffer.getChannelData(0);
+    let peak=0; for(let i=0;i<inp.length;i++) peak=Math.max(peak,Math.abs(inp[i]));
+    document.getElementById('lvl').style.width = Math.min(100, peak*200)+'%';
+    const pcm = floatTo16kPCM(inp, audioCtx.sampleRate);
+    socket.emit('audio', {pcm: b64(pcm)});
+  };
+  running = true; setStatus('listening + generating…');
+};
+
+function sendSteer(){
+  const v = document.getElementById('steerInput').value.trim();
+  if(v){ socket.emit('set_prompt', {prompt:v}); }
+}
+document.getElementById('steerBtn').onclick = sendSteer;
+document.getElementById('steerInput').addEventListener('keydown', e=>{ if(e.key==='Enter') sendSteer(); });
+
+document.getElementById('muteBtn').onclick = ()=>{
+  muted = !muted;
+  document.getElementById('muteBtn').textContent = muted ? '🔊 Unmute' : '🔇 Mute';
+  if(running) setStatus(muted ? 'muted (mic off, still generating)' : 'listening + generating…');
+};
+
+document.getElementById('stopBtn').onclick = ()=>{
+  running=false;
+  muted=false; document.getElementById('muteBtn').textContent='🔇 Mute';
+  socket.emit('stop');
+  if(proc){proc.disconnect(); proc=null;}
+  if(source){source.disconnect();}
+  if(stream){stream.getTracks().forEach(t=>t.stop());}
+  if(audioCtx){audioCtx.close();}
+  setStatus('stopped');
+};
+</script>
+</body>
+</html>

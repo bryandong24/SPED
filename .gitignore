@@ -1,0 +1,83 @@
+# ===== Model weights / checkpoints =====
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.h5
+*.msgpack
+*.onnx
+*.gguf
+*.pkl
+*.npy
+*.npz
+checkpoints/
+wan_models/
+**/checkpoints/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.eggs/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ===== Virtual environments =====
+venv/
+.venv/
+env/
+*_venv/
+**/.venv/
+**/venv/
+gamecraft_venv/
+minwm_venv/
+
+# ===== Compiled / native =====
+*.so
+*.o
+*.a
+*.dylib
+*.dll
+*.lib
+
+# ===== Logs =====
+*.log
+
+# ===== Media / video outputs =====
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.gif
+
+# ===== 3D / misc large assets =====
+*.stl
+
+# ===== Archives / datasets =====
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.gz
+
+# ===== Large prompt datasets (>100MB, GitHub rejects) =====
+speed-self-forcing/vidprom_filtered_extended.txt
+speed-self-forcing/prompts/vidprom_filtered_extended.txt
+
+# ===== Generated output frames / samples (non-important) =====
+gino/out/
+gino/experiments/**/*.png
+
+# ===== Caches / tooling =====
+.cache/
+wandb/
+.nv/
+.DS_Store
+
+# ===== Cloned upstream (git stripped) — kept locally only =====
+Hunyuan-GameCraft/
+gamecraft_venv/

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Thin launcher: runs gemini_client.py with the bundled venv (has google-genai).
+# Works from any directory. Examples:
+#   /mnt/data/SPED/gemini/gem "hello"
+#   /mnt/data/SPED/gemini/gem -f out/run.mp4 "rate this clip 1-10"
+#   /mnt/data/SPED/gemini/gem --info
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$here/.venv/bin/python" "$here/gemini_client.py" "$@"

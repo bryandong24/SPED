@@ -1,0 +1,3 @@
+# Installed into ./.venv (created with `uv venv`).
+# Recreate with:  uv venv .venv && VIRTUAL_ENV=$PWD/.venv uv pip install -r requirements.txt
+google-genai>=2.9.0

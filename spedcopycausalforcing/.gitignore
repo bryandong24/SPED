@@ -1,0 +1,17 @@
+__pycache__
+*.egg-info
+
+# Model weights — too large for GitHub; local symlinks to the originals
+# (see README_SPEED.md to recreate). Already excluded:
+wan_models
+checkpoints
+output
+dataset
+prompts/vidprom_filtered_extended.txt
+logs
+
+# SPEED fork: generated artifacts (regenerable). Keep small JSON stats + doc PNG.
+.venv
+*.log
+out/*.mp4
+out/batch_speed_test/

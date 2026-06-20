@@ -1,0 +1,430 @@
+import os
+import torch
+import diffusers
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from packaging import version
+
+try:
+    import torch_musa
+except ModuleNotFoundError:
+    pass
+
+from xfuser.logger import init_logger
+
+logger = init_logger(__name__)
+
+if TYPE_CHECKING:
+    MASTER_ADDR: str = ""
+    MASTER_PORT: Optional[int] = None
+    CUDA_HOME: Optional[str] = None
+    LOCAL_RANK: int = 0
+    CUDA_VISIBLE_DEVICES: Optional[str] = None
+    XDIT_LOGGING_LEVEL: str = "INFO"
+    CUDA_VERSION: version.Version
+    TORCH_VERSION: version.Version
+
+
+environment_variables: Dict[str, Callable[[], Any]] = {
+    # ================== Runtime Env Vars ==================
+    # used in distributed environment to determine the master address
+    "MASTER_ADDR": lambda: os.getenv("MASTER_ADDR", ""),
+    # used in distributed environment to manually set the communication port
+    "MASTER_PORT": lambda: (
+        int(os.getenv("MASTER_PORT", "0")) if "MASTER_PORT" in os.environ else None
+    ),
+    # path to cudatoolkit home directory, under which should be bin, include,
+    # and lib directories.
+    "CUDA_HOME": lambda: os.environ.get("CUDA_HOME", None),
+    # local rank of the process in the distributed setting, used to determine
+    # the GPU device id
+    "LOCAL_RANK": lambda: int(os.environ.get("LOCAL_RANK", "0")),
+    # used to control the visible devices in the distributed setting
+    "CUDA_VISIBLE_DEVICES": lambda: os.environ.get("CUDA_VISIBLE_DEVICES", None),
+    # this is used for configuring the default logging level
+    "XDIT_LOGGING_LEVEL": lambda: os.getenv("XDIT_LOGGING_LEVEL", "INFO"),
+    # this is used to set the static scale for AITER FP8 attention when descale vectors are used
+    "AITER_FP8_STATIC_SCALE_WITH_DESCALE": lambda: os.environ.get(
+                "XFUSER_AITER_FP8_STATIC_SCALE_WITH_DESCALE", None
+            ),
+    "AITER_SAGE_V2_BLOCK_R": lambda: os.environ.get("XFUSER_AITER_SAGE_V2_BLOCK_R", "128"),
+    "XDIT_FBCACHE_THRESH": lambda: os.environ.get("XDIT_FBCACHE_THRESH", None),
+}
+
+
+def _is_hip():
+    has_rocm = torch.version.hip is not None
+    return has_rocm
+
+
+def _is_cuda():
+    has_cuda = torch.version.cuda is not None
+    return has_cuda
+
+
+def _is_musa():
+    try:
+        if hasattr(torch, "musa") and torch.musa.is_available():
+            return True
+    except ModuleNotFoundError:
+        return False
+
+
+def _is_mps():
+    return torch.backends.mps.is_available()
+
+
+def _is_npu():
+    try:
+        if hasattr(torch, "npu") and torch.npu.is_available():
+            return True
+    except ModuleNotFoundError:
+        return False
+
+
+def get_device(local_rank: int) -> torch.device:
+    if _is_cuda() or _is_hip():
+        return torch.device("cuda", local_rank)
+    elif _is_musa():
+        return torch.device("musa", local_rank)
+    elif _is_mps():
+        return torch.device("mps")
+    elif _is_npu():
+        return torch.device("npu", local_rank)
+    else:
+        return torch.device("cpu")
+
+
+def get_device_name() -> str:
+    if _is_cuda() or _is_hip():
+        return "cuda"
+    elif _is_musa():
+        return "musa"
+    elif _is_mps():
+        return "mps"
+    elif _is_npu():
+        return "npu"
+    else:
+        return "cpu"
+
+
+def get_device_version():
+    if _is_hip():
+        hip_version = torch.version.hip
+        hip_version = hip_version.split("-")[0]
+        return hip_version
+    elif _is_cuda():
+        return torch.version.cuda
+    elif _is_musa():
+        return torch.version.musa
+    elif _is_mps():
+        return None
+    elif _is_npu():
+        return None
+    else:
+        raise NotImplementedError(
+            "No Accelerators(AMD/NV/MTT GPU, AMD MI instinct accelerators) available"
+        )
+
+
+def get_torch_distributed_backend() -> str:
+    if _is_cuda() or _is_hip():
+        return "nccl"
+    elif _is_musa():
+        return "mccl"
+    elif _is_mps():
+        return "gloo"
+    elif _is_npu():
+        return "hccl"
+    else:
+        raise NotImplementedError(
+            "No Accelerators(AMD/NV/MTT GPU, AMD MI instinct accelerators) available"
+        )
+
+def get_platform() -> str:
+    if _is_cuda():
+        return "cuda"
+    elif _is_hip():
+        return "rocm"
+    elif _is_musa():
+        return "musa"
+    elif _is_mps():
+        return "mps"
+    elif _is_npu():
+        return "npu"
+    else:
+        return "cpu"
+
+
+variables: Dict[str, Callable[[], Any]] = {
+    # ================== Other Vars ==================
+    # used in version checking
+    "CUDA_VERSION": lambda: version.parse(get_device_version() or "0.0"),
+    "TORCH_VERSION": lambda: version.parse(
+        version.parse(torch.__version__).base_version
+    ),
+}
+
+
+def _setup_musa(environment_variables, variables):
+    musa = getattr(torch, "musa", None)
+    if musa is None:
+        return
+    try:
+        if musa.is_available():
+            environment_variables["MUSA_HOME"] = lambda: os.environ.get(
+                "MUSA_HOME", None
+            )
+            environment_variables["MUSA_VISIBLE_DEVICES"] = lambda: os.environ.get(
+                "MUSA_VISIBLE_DEVICES", None
+            )
+            musa_ver = getattr(getattr(torch, "version", None), "musa", None)
+            if musa_ver:
+                variables["MUSA_VERSION"] = lambda: version.parse(musa_ver)
+    except Exception:
+        pass
+
+
+try:
+    _setup_musa(environment_variables, variables)
+except (AttributeError, ModuleNotFoundError):
+    pass
+
+
+class PackagesEnvChecker:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(PackagesEnvChecker, cls).__new__(cls)
+            cls._instance.initialize()
+        return cls._instance
+
+    def initialize(self):
+        packages_info = {}
+        packages_info["has_aiter"] = self.check_aiter()
+        packages_info["has_flash_attn"] = self.check_flash_attn()
+        packages_info["has_flash_attn_3"] = self._check_flash_attn_3()
+        packages_info["has_flash_attn_4"] = self._check_flash_attn_4()
+        packages_info["has_flash_attn_4_fp4"] = self._check_flash_attn_4_fp4()
+        packages_info["has_transformer_engine"] = self.check_transformer_engine()
+        packages_info["has_sage"] = self._check_sage()
+        packages_info["has_flex_block_attn"] = self._check_flex_block_attn()
+        packages_info["has_long_ctx_attn"] = self.check_long_ctx_attn()
+        packages_info["diffusers_version"] = self.check_diffusers_version()
+        packages_info["has_npu_flash_attn"] = self.check_npu_flash_attn()
+        packages_info["has_distvae"] = self.check_distvae()
+        self.packages_info = packages_info
+
+    def check_aiter(self):
+        """
+        Checks whether ROCm AITER library is installed
+        """
+        if not torch.cuda.is_available():
+            return False
+        if not self._on_mi3xx() and not self._on_rdna4():
+            return False
+        try:
+            import aiter
+            return True
+        except:
+            if _is_hip():
+                logger.warning(
+                    f'Using AMD GPUs, but library "aiter" is not installed, '
+                    'defaulting to other attention mechanisms'
+                )
+            return False
+
+
+
+    def check_flash_attn(self):
+        if not torch.cuda.is_available():
+            return False
+
+        # Check if torch_npu is available
+        if _is_npu():
+            logger.info("flash_attn is not ready on torch_npu for now")
+            return False
+
+        if _is_musa():
+            logger.info(
+                "Flash Attention library is not supported on MUSA for the moment."
+            )
+            return False
+        try:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            gpu_name = torch.cuda.get_device_name(device)
+            if "Turing" in gpu_name or "Tesla" in gpu_name or "T4" in gpu_name:
+                return False
+            else:
+                from flash_attn import flash_attn_func
+                from flash_attn import __version__
+
+                if __version__ < "2.6.0":
+                    raise ImportError(f"install flash_attn >= 2.6.0")
+                return True
+        except ImportError:
+            return False
+
+    def _check_flash_attn_3(self):
+        try:
+            from flash_attn_interface import flash_attn_func as flash3_attn_func
+            return True
+        except:
+            return False
+
+    def _check_flash_attn_4(self):
+        try:
+            from flash_attn.cute import interface as flash_cute
+            return True
+        except:
+            return False
+
+    def _check_flash_attn_4_fp4(self):
+        if not torch.cuda.is_available() or _is_hip():
+            return False
+        try:
+            major, _ = torch.cuda.get_device_capability()
+            if major < 10:
+                return False
+            from flash_attn.cute.flash_fwd_sm100_fp4 import FlashAttentionForwardSm100  # noqa: F401
+            # TVM-FFI must be enabled for CUTE tensors (FP4 quantized Q/K)
+            # to be passed through the cutlass-dsl compiled kernel.
+            os.environ.setdefault("CUTE_DSL_ENABLE_TVM_FFI", "1")
+            return True
+        except:
+            return False
+
+    @staticmethod
+    def _install_flash_attn_3_shim_for_transformer_engine() -> None:
+        """TE imports ``flash_attn_3.flash_attn_interface``; wheels often expose only ``flash_attn_interface``."""
+        import sys
+        import types
+
+        if "flash_attn_3.flash_attn_interface" in sys.modules:
+            return
+        try:
+            import flash_attn_interface as _fai
+        except ImportError:
+            return
+        if "flash_attn_3" not in sys.modules:
+            sys.modules["flash_attn_3"] = types.ModuleType("flash_attn_3")
+        sys.modules["flash_attn_3.flash_attn_interface"] = _fai
+
+    def check_transformer_engine(self):
+        import sys
+        if not torch.cuda.is_available() or _is_hip():
+            return False
+        self._install_flash_attn_3_shim_for_transformer_engine()
+        if "flash_attn_3.flash_attn_interface" not in sys.modules:
+            return False
+        try:
+            from transformer_engine.pytorch import DotProductAttention, fp8_autocast  # noqa: F401
+            from transformer_engine.common import recipe # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def _check_sage(self):
+        try:
+            from sageattention import sageattn
+            return True
+        except:
+            return False
+
+    def _check_flex_block_attn(self):
+        try:
+            from flex_block_attn import flex_block_attn_func
+            return True
+        except:
+            return False
+
+
+    def check_long_ctx_attn(self):
+        if not (torch.cuda.is_available() or _is_npu()):
+            return False
+        try:
+            from yunchang import (
+                set_seq_parallel_pg,
+                ring_flash_attn_func,
+                UlyssesAttention,
+                LongContextAttention,
+                LongContextAttentionQKVPacked,
+            )
+
+            return True
+        except ImportError:
+            logger.warning(
+                f'Ring Flash Attention library "yunchang" not found, '
+                f"using pytorch attention implementation"
+            )
+            return False
+
+    def check_diffusers_version(self):
+        if version.parse(
+            version.parse(diffusers.__version__).base_version
+        ) < version.parse("0.30.0"):
+            raise RuntimeError(
+                f"Diffusers version: {version.parse(version.parse(diffusers.__version__).base_version)} is not supported,"
+                f"please upgrade to version > 0.30.0"
+            )
+        return version.parse(version.parse(diffusers.__version__).base_version)
+
+    def check_npu_flash_attn(self):
+        if not _is_npu():
+            return False
+        try:
+            import torch_npu
+            return hasattr(torch_npu, "npu_fused_infer_attention_score")
+        except ImportError:
+            return False
+
+    def check_distvae(self):
+        try:
+            from distvae.modules.adapters.vae.decoder_adapters import DecoderAdapter
+            return True
+        except ImportError:
+            return False
+
+    def get_packages_info(self):
+        return self.packages_info
+
+    def _on_mi3xx(self):
+        device = torch.cuda.current_device()
+        gcn_arch_name = torch.cuda.get_device_properties(device).gcnArchName
+        return any(arch in gcn_arch_name for arch in ["gfx950", "gfx942"])
+
+    def _on_rdna4(self):
+        device = torch.cuda.current_device()
+        gcn_arch_name = torch.cuda.get_device_properties(device).gcnArchName
+        return any(arch in gcn_arch_name for arch in ["gfx1200", "gfx1201"])
+
+
+PACKAGES_CHECKER = PackagesEnvChecker()
+_TORCH_GROUPNORM = torch.nn.GroupNorm
+
+def _setup_rocm_libraries():
+    if PACKAGES_CHECKER.packages_info.get("has_aiter", False):
+        try:
+            from aiter.ops.groupnorm import GroupNorm
+            torch.nn.GroupNorm = GroupNorm
+            logger.info("Using AITER GroupNorm as torch.nn.GroupNorm")
+        except ImportError:
+            logger.warning(
+                f'Using AITER but AITER GroupNorm is not available, please update AITER. '
+                'Defaulting to torch GroupNorm implementation'
+            )
+
+if _is_hip():
+    _setup_rocm_libraries()
+
+def __getattr__(name):
+    # lazy evaluation of environment variables
+    if name in environment_variables:
+        return environment_variables[name]()
+    if name in variables:
+        return variables[name]()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return list(environment_variables.keys())
