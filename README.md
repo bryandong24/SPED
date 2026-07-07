@@ -2,7 +2,7 @@
 
 **🏆 $50,000 Grand Prize Winner — 2026 Inference-Time Compute Hackathon** (Etched × Mercor × Cognition × Anthropic)
 
-Talk to a video model **while it generates**. SPED makes autoregressive video diffusion interactive at real-time speeds: speak a new prompt mid-generation and the scene morphs smoothly wotj **no training, no data, no cache resets**. **0.69 s end-to-end from voice to pixels**.
+Talk to a video model **while it generates**. SPED makes autoregressive video diffusion interactive at real-time speeds: speak a new prompt mid-generation and the scene morphs smoothly with **no training, no data, no cache resets**. **0.69 s end-to-end from voice to pixels**.
 
 ## Demos
 
