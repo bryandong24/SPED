@@ -15,9 +15,7 @@ Talk to a video model **while it generates**. SPED makes autoregressive video di
 
 ## How it works
 
-Four pieces, all inference-time — no fine-tuning, no adapters, no training data:
-
-1. **Training-free prompt injection** — during a transition, each new chunk is conditioned on a *linear interpolation between the old and new prompt embeddings*, so the scene morphs instead of jump-cutting. The KV cache is never invalidated. Works on any prompt-conditioned autoregressive video diffusion model.
+1. **Training-free interactive prompt injection** — during a transition, each new chunk is conditioned on a *linear interpolation between the old and new prompt embeddings*, so the scene morphs instead of jump-cutting. The KV cache is never invalidated. Works on any prompt-conditioned autoregressive video diffusion model.
 2. **SPEED (Spectral Progressive Diffusion)** — denoising made spectrally autoregressive in the frequency domain: early steps work on low-frequency structure, later steps add high-frequency detail. ~10% throughput gain, no quality loss.
 3. **Fused kernels** — FlashAttention 3 for the attention-dominated share of step time, plus custom fused RMSNorm (**7.71×**) and fused SiLU gate (**1.68×**) kernels for the memory-bound share.
 4. **Pipeline parallelism** — DiT denoising on GPU 0 (~700 ms/chunk), VAE decode on GPU 1 (~276 ms/chunk), connected by a FIFO queue over NVLink. Decode is fully hidden; **28% lower end-to-end latency**.
